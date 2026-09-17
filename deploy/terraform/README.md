@@ -17,6 +17,7 @@ Cada arquivo `.tf` foi projetado para espelhar e automatizar um laboratório esp
 | **LAB 05** | [`lab05_observability.tf`](lab05_observability.tf) | Rastreamento ativo (**AWS X-Ray** no Lambda), políticas IAM do **Application Signals**, CloudWatch Log Group `/aws/bedrock/modelinvocations` e **Bedrock Model Invocation Logging**. |
 | **LAB 07** | [`finops_cost_estimator.py`](finops_cost_estimator.py) | **Shift-Left FinOps**: Estimador pré-deploy que projeta custos de Tokenomics (Nova vs Llama) e infraestrutura serverless antes de aplicar o Terraform. |
 | **LAB 07** | [`finops_actual_tracker.py`](finops_actual_tracker.py) | **Post-Deploy FinOps**: Monitor de gastos reais acumulados que consulta a **AWS Cost Explorer API** e gera relatórios para terminal e CI/CD. |
+| **LAB 08** | [`tests/test_lab08_resilience_fallback.py`](tests/test_lab08_resilience_fallback.py) | **Resilience & Chaos Testing**: Teste automatizado que simula falha do Llama 3 8B e valida o failover instantâneo para o Amazon Nova Lite v1. |
 
 ---
 

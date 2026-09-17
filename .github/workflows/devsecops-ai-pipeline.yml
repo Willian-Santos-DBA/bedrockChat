@@ -70,6 +70,7 @@ jobs:
         run: |
           python -m py_compile bedrockChatFunction.py
           python -m py_compile deploy/terraform/tests/test_lab02_owasp_redteam.py
+          python -m py_compile deploy/terraform/tests/test_lab08_resilience_fallback.py
           python -m py_compile deploy/terraform/finops_cost_estimator.py
           python -m py_compile deploy/terraform/finops_actual_tracker.py
           echo "✔ Sintaxe Python validada com sucesso."

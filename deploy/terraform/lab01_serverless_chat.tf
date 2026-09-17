@@ -182,6 +182,7 @@ resource "aws_lambda_function" "bedrock_chat" {
   environment {
     variables = {
       MODEL_ID          = var.default_model_id
+      FALLBACK_MODEL_ID = "us.amazon.nova-lite-v1:0"
       GUARDRAIL_ID      = var.enable_guardrails ? aws_bedrock_guardrail.techfin_guardrail[0].guardrail_id : ""
       GUARDRAIL_VERSION = var.enable_guardrails ? aws_bedrock_guardrail_version.techfin_guardrail_v1[0].version : "DRAFT"
       RAG_BUCKET        = aws_s3_bucket.rag.id

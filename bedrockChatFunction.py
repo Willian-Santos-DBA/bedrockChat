@@ -9,6 +9,7 @@ s3_client = boto3.client(service_name='s3')
 
 # --- Configurações padrão via variáveis de ambiente ---
 DEFAULT_MODEL_ID = os.environ.get('MODEL_ID', 'meta.llama3-8b-instruct-v1:0')
+DEFAULT_FALLBACK_MODEL_ID = os.environ.get('FALLBACK_MODEL_ID', 'us.amazon.nova-lite-v1:0')
 GUARDRAIL_ID = os.environ.get('GUARDRAIL_ID', '')
 GUARDRAIL_VERSION = os.environ.get('GUARDRAIL_VERSION', 'DRAFT')
 ALLOWED_ORIGIN = os.environ.get('ALLOWED_ORIGIN', '*')
@@ -68,6 +69,17 @@ def lambda_handler(event, context):
             use_guardrail = body.get('useGuardrail', False)
             model_id = body.get('modelId', DEFAULT_MODEL_ID)
             
+            # Parâmetros de Resiliência & Circuit Breaker (LAB 08)
+            simulate_failure = body.get('simulateFailure', False)
+            enable_fallback = body.get('enableFallback', True)
+            requested_fallback_model = (body.get('fallbackModelId') or DEFAULT_FALLBACK_MODEL_ID).strip()
+            
+            # Se o modelo primário for o mesmo do fallback, usa Nova Micro como segundo fallback
+            if model_id == requested_fallback_model:
+                effective_fallback_model = 'us.amazon.nova-micro-v1:0'
+            else:
+                effective_fallback_model = requested_fallback_model
+
             # Parâmetros para RAG no S3
             use_rag = body.get('useRag', False)
             rag_bucket = (body.get('ragBucket') or DEFAULT_RAG_BUCKET).strip()
@@ -147,22 +159,68 @@ Com base nas informações oficiais presentes em <context>, responda à dúvida 
                 else:
                     print(f"INFO: Guardrail DESABILITADO. Modelo [{model_id}] executando sem filtros externos.")
 
-            # Chamada unificada da Converse API com fallback automático se o modelo não aceitar parâmetro 'system'
+            # Função auxiliar para invocação da Converse API com suporte a fallback de 'system'
+            def invoke_bedrock_converse(target_model):
+                args = dict(converse_args)
+                args['modelId'] = target_model
+                try:
+                    return bedrock_runtime.converse(**args)
+                except ClientError as err:
+                    err_msg = err.response.get('Error', {}).get('Message', '')
+                    if 'system' in err_msg.lower() or 'not support system' in err_msg.lower():
+                        print(f"AVISO: Modelo [{target_model}] não suporta parâmetro 'system'. Injetando no corpo da mensagem.")
+                        fallback_messages = [{
+                            "role": "user",
+                            "content": [{"text": f"INSTRUÇÕES DO SISTEMA:\n{SYSTEM_PROMPT}\n\nMENSAGEM DO USUÁRIO:\n{effective_prompt}"}]
+                        }]
+                        args.pop('system', None)
+                        args['messages'] = fallback_messages
+                        return bedrock_runtime.converse(**args)
+                    else:
+                        raise err
+
+            # --- Mecanismo de Circuit Breaker & Multi-Model Fallback (LAB 08) ---
+            actual_model_id = model_id
+            fallback_triggered = False
+            failover_reason = None
+            circuit_breaker_state = "CLOSED"
+
             try:
-                response = bedrock_runtime.converse(**converse_args)
-            except ClientError as e:
-                error_msg = e.response.get('Error', {}).get('Message', '')
-                if 'system' in error_msg.lower() or 'not support system' in error_msg.lower():
-                    print(f"AVISO: Modelo [{model_id}] não suporta parâmetro 'system'. Executando com instrução no corpo da mensagem.")
-                    fallback_messages = [{
-                        "role": "user",
-                        "content": [{"text": f"INSTRUÇÕES DO SISTEMA:\n{SYSTEM_PROMPT}\n\nMENSAGEM DO USUÁRIO:\n{effective_prompt}"}]
-                    }]
-                    converse_args.pop('system', None)
-                    converse_args['messages'] = fallback_messages
-                    response = bedrock_runtime.converse(**converse_args)
+                # Simulação didática de caos (Chaos Engineering) para testes do Circuit Breaker
+                if simulate_failure:
+                    print(f"💥 CHAOS ENGINEERING ATIVADO: Forçando falha simulada do modelo primário [{model_id}].")
+                    raise ClientError(
+                        {
+                            "Error": {
+                                "Code": "ModelNotReadyException",
+                                "Message": f"Simulação de Caos (LAB 08): Modelo primário [{model_id}] indisponível por sobrecarga temporária."
+                            }
+                        },
+                        "Converse"
+                    )
+
+                response = invoke_bedrock_converse(model_id)
+
+            except ClientError as primary_err:
+                primary_code = primary_err.response.get('Error', {}).get('Code', 'UnknownClientError')
+                primary_msg = primary_err.response.get('Error', {}).get('Message', str(primary_err))
+
+                # Se o fallback estiver habilitado e houver modelo secundário diferente do primário
+                if enable_fallback and effective_fallback_model and effective_fallback_model != model_id:
+                    print(f"⚡ CIRCUIT BREAKER OPEN: Falha no modelo primário [{model_id}] ({primary_code}: {primary_msg}).")
+                    print(f"🔄 Executando failover instantâneo para o modelo secundário [{effective_fallback_model}]...")
+                    try:
+                        response = invoke_bedrock_converse(effective_fallback_model)
+                        actual_model_id = effective_fallback_model
+                        fallback_triggered = True
+                        failover_reason = f"{primary_code}: {primary_msg}"
+                        circuit_breaker_state = "OPEN_FALLBACK"
+                        print(f"✔ Failover concluído com sucesso! Resposta gerada por [{actual_model_id}].")
+                    except Exception as fallback_err:
+                        print(f"❌ ERRO CRÍTICO: Falha tanto no modelo primário quanto no fallback: {fallback_err}")
+                        raise primary_err
                 else:
-                    raise e
+                    raise primary_err
 
             stop_reason = response.get('stopReason', 'end_turn')
             output_content = response.get('output', {}).get('message', {}).get('content', [{}])
@@ -173,12 +231,13 @@ Com base nas informações oficiais presentes em <context>, responda à dúvida 
             guardrail_trace = response.get('trace', {}).get('guardrail', {}) if guardrail_intervened else None
 
             # FinOps: Cálculo detalhado de consumo de tokens e custos estimados da inferência
+            # Utiliza actual_model_id para que a tarifa reflita com exatidão o modelo que gerou a resposta (ex: Nova Lite no fallback)
             usage = response.get('usage', {})
             input_tokens = usage.get('inputTokens', 0)
             output_tokens = usage.get('outputTokens', 0)
             total_tokens = usage.get('totalTokens', input_tokens + output_tokens)
 
-            rates = FINOPS_PRICING.get(model_id, DEFAULT_MODEL_PRICING)
+            rates = FINOPS_PRICING.get(actual_model_id, DEFAULT_MODEL_PRICING)
             model_cost = (input_tokens / 1000.0) * rates["input_1k"] + (output_tokens / 1000.0) * rates["output_1k"]
             guardrail_cost = GUARDRAIL_COST_PER_CALL if (use_guardrail and guardrail_id) else 0.0
             total_cost = model_cost + guardrail_cost
@@ -195,7 +254,7 @@ Com base nas informações oficiais presentes em <context>, responda à dúvida 
             # Montagem da resposta para o Frontend
             response_payload = {
                 'response': model_response_text,
-                'modelId': model_id,
+                'modelId': actual_model_id,
                 'stopReason': stop_reason,
                 'guardrailEnabled': bool(use_guardrail and guardrail_id),
                 'guardrailId': guardrail_id if (use_guardrail and guardrail_id) else None,
@@ -204,7 +263,14 @@ Com base nas informações oficiais presentes em <context>, responda à dúvida 
                 'ragDocumentLoaded': rag_doc_loaded,
                 'ragDocumentName': rag_doc_name,
                 'usage': usage,
-                'costDetails': cost_details
+                'costDetails': cost_details,
+                'resilience': {
+                    'fallbackTriggered': fallback_triggered,
+                    'primaryModel': model_id,
+                    'actualModel': actual_model_id,
+                    'failoverReason': failover_reason,
+                    'circuitBreakerState': circuit_breaker_state
+                }
             }
 
             if guardrail_intervened:

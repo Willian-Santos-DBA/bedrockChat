@@ -217,3 +217,8 @@ Você concluiu este laboratório com sucesso se:
 - [x] O chat web (`chat.html`) exibe a badge `💰 FinOps` em cada resposta e mantém o saldo acumulado da sessão no cabeçalho.
 - [x] O backend `bedrockChatFunction.py` retorna o objeto `costDetails` com tokens e custos em USD discriminados.
 - [x] A esteira do GitHub Actions inclui estimativas no Step Summary e suporta auditorias sob demanda via `finops-audit`.
+
+---
+
+👉 **Próximo Laboratório:** [LAB 08 - Resiliência em IA Generativa: Multi-Model Fallback & Circuit Breaker (AWS Bedrock & Lambda)](LAB08_GenAI_Resilience_MultiModel_Fallback.md)
+
